@@ -100,7 +100,9 @@ cp .env.example .env          # add ANTHROPIC_API_KEY and TINYFISH_API_KEY
 medagent serve                # http://127.0.0.1:8000
 ```
 
-The agent uses `anthropic:claude-sonnet-5` by default. Any LangChain `init_chat_model` string works through `MEDAGENT_MODEL`, for example `openai:gpt-5` after `pip install -e ".[openai]"`.
+The agent uses `anthropic:claude-sonnet-5` by default. Any LangChain `init_chat_model` string works through `MEDAGENT_MODEL`, for example `openai:gpt-5`.
+
+Each user can also bring their own model from the **Settings** tab in the web UI: an Anthropic-compatible or OpenAI-compatible endpoint (base URL, API key, model name). Those settings are kept in the browser's local storage and sent with each Ask request, overriding the server's `.env` keys for that user; the server does not store them.
 
 ### CLI
 

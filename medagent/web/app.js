@@ -23,6 +23,7 @@
     drug: ["apixaban", "tirzepatide", "amiodarone", "valproate"],
     calc: [],
     library: [],
+    settings: [],
   };
 
   const state = {
@@ -81,6 +82,24 @@
   const shortAuthors = (a) => (!a?.length ? "" : a.length > 3 ? `${a[0]}, ${a[1]}, ${a[2]} et al.` : a.join(", "));
   const storeGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (_) { return d; } };
   const storeSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* private mode */ } };
+
+  // ------------------------------------------------------ user model settings
+  // Shape: { active: "server"|"anthropic"|"openai", anthropic: {base_url, api_key, model}, openai: {...} }
+  const LLM_KEY = "medagent.llm";
+  const LLM_DEFAULT_MODEL = { anthropic: "claude-sonnet-5", openai: "gpt-5" };
+  const loadLLM = () => {
+    const v = storeGet(LLM_KEY, {});
+    return { active: v.active || "server", anthropic: v.anthropic || {}, openai: v.openai || {} };
+  };
+  function llmConfig(provider, cfg) {
+    if (!cfg?.api_key) return null;
+    return { provider, api_key: cfg.api_key, base_url: cfg.base_url || null, model: cfg.model || LLM_DEFAULT_MODEL[provider] };
+  }
+  // The endpoint Ask should use, or null for the server's own .env configuration.
+  function activeLLM() {
+    const s = loadLLM();
+    return s.active === "server" ? null : llmConfig(s.active, s[s.active]);
+  }
 
   function vancouver(a) {
     const parts = [];
@@ -736,7 +755,7 @@
     try {
       const res = await fetch("/api/ask/stream", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, conversation_id: state.conv }),
+        body: JSON.stringify({ question, conversation_id: state.conv, llm: activeLLM() }),
       });
       if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
       const reader = res.body.getReader();
@@ -776,7 +795,7 @@
         }
       }
     } catch (err) {
-      answer.innerHTML = `<p class="err">${esc(err.message)}${/api[_ ]key|auth/i.test(err.message) ? "<br>Set ANTHROPIC_API_KEY (or another model provider key) in .env and restart." : ""}</p>`;
+      answer.innerHTML = `<p class="err">${esc(err.message)}${/api[_ ]key|auth/i.test(err.message) ? "<br>Check the API key and base URL in Settings, or set a provider key in the server's .env." : ""}</p>`;
     } finally {
       answer.classList.remove("streaming");
       btn.disabled = false;
@@ -788,7 +807,7 @@
     if (t.children.length) return;
     t.innerHTML = `<div class="empty" id="askEmpty"><h2>Ask a clinical question</h2>
       <p>The agent plans its searches, queries PubMed, Europe PMC, guideline bodies, ClinicalTrials.gov and FDA labels, reads what it needs, and answers with a bottom line, an evidence table and numbered citations. Hover a citation to preview the source.</p>
-      ${state.health && !state.health.agent_ready ? `<p class="err">No model API key found for ${esc(state.health.model)}. Add it to .env to enable Ask. Search, trials and drug views work without it.</p>` : ""}</div>
+      ${state.health && !state.health.agent_ready && !activeLLM() ? `<p class="err">No model configured. Add your own Anthropic- or OpenAI-compatible key in <a href="#" data-goto="settings">Settings</a> to enable Ask. Search, trials and drug views work without it.</p>` : ""}</div>
       <form class="ask-box" id="askForm"><label class="sr-only" for="askInput">Question</label>
         <textarea id="askInput" placeholder="e.g. Is there RCT evidence for tenecteplase over alteplase in acute ischaemic stroke?"></textarea>
         <button class="primary" id="askBtn">Ask</button></form>`;
@@ -802,16 +821,73 @@
     $("#askInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("#askForm").requestSubmit(); });
   }
 
+  // ----------------------------------------------------------------- settings
+  function readCard(provider) {
+    const f = $(`.llmcard[data-provider="${provider}"]`);
+    return { base_url: f.base_url.value.trim(), api_key: f.api_key.value.trim(), model: f.model.value.trim() };
+  }
+
+  function markActiveCard() {
+    const active = $('input[name="llmActive"]:checked').value;
+    $$(".llmcard").forEach((f) => f.classList.toggle("active", f.dataset.provider === active));
+  }
+
+  function renderSettings() {
+    const s = loadLLM();
+    $("#serverModel").textContent = state.health ? `(${state.health.model}${state.health.agent_ready ? "" : ", no key on server"})` : "";
+    for (const provider of ["anthropic", "openai"]) {
+      const f = $(`.llmcard[data-provider="${provider}"]`);
+      f.base_url.value = s[provider].base_url || "";
+      f.api_key.value = s[provider].api_key || "";
+      f.model.value = s[provider].model || "";
+      $(".testmsg", f).textContent = "";
+    }
+    $$('input[name="llmActive"]').forEach((r) => (r.checked = r.value === s.active));
+    markActiveCard();
+  }
+
+  function saveSettings() {
+    const active = $('input[name="llmActive"]:checked').value;
+    const next = { active, anthropic: readCard("anthropic"), openai: readCard("openai") };
+    if (active !== "server" && !next[active].api_key) return toast("Add an API key for the selected endpoint first");
+    storeSet(LLM_KEY, next);
+    if ($("#askEmpty")) $("#thread").innerHTML = "";  // re-render the Ask intro without the stale "no model" notice
+    updateAgentStatus();
+    toast(active === "server" ? "Using the server's model" : `Saved — Ask now uses your ${active === "openai" ? "OpenAI" : "Anthropic"}-compatible endpoint`);
+  }
+
+  async function testCard(provider) {
+    const f = $(`.llmcard[data-provider="${provider}"]`);
+    const out = $(".testmsg", f);
+    const llm = llmConfig(provider, readCard(provider));
+    if (!llm) { out.className = "testmsg bad"; out.textContent = "Enter an API key first"; return; }
+    out.className = "testmsg"; out.textContent = "Testing…";
+    try {
+      const r = await api("/api/llm/test", { method: "POST", body: { llm } });
+      out.className = `testmsg ${r.ok ? "ok" : "bad"}`;
+      out.textContent = r.ok ? `Connected (${llm.model}): ${r.reply}` : r.error;
+    } catch (err) { out.className = "testmsg bad"; out.textContent = err.message; }
+  }
+
+  function updateAgentStatus() {
+    const dot = $("#agentDot");
+    if (!dot) return;
+    const own = activeLLM();
+    dot.classList.toggle("off", !(own || state.health?.agent_ready));
+    dot.parentElement.title = own ? `${own.provider}-compatible: ${own.model}` : state.health?.model || "";
+  }
+
   // -------------------------------------------------------------------- modes
   function setMode(mode) {
     state.mode = mode;
     storeSet("medagent.mode", mode);
     $$(".modes button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.mode === mode)));
-    const isAsk = mode === "ask", isCalc = mode === "calc";
+    const isAsk = mode === "ask", isCalc = mode === "calc", isSettings = mode === "settings";
     $("#askView").hidden = !isAsk;
     $("#calcView").hidden = !isCalc;
-    $("#desk").hidden = isAsk || isCalc;
-    $("#searchForm").hidden = isAsk || isCalc || mode === "library";
+    $("#settingsView").hidden = !isSettings;
+    $("#desk").hidden = isAsk || isCalc || isSettings;
+    $("#searchForm").hidden = isAsk || isCalc || isSettings || mode === "library";
     $("#desk").classList.toggle("no-rail", mode === "drug" || mode === "trials");
     $("#days").hidden = mode !== "new";
     $("#watchBtn").hidden = mode !== "new";
@@ -822,6 +898,7 @@
     $("#examples").innerHTML = (EXAMPLES[mode] || []).map((e) => `<button type="button">${esc(e)}</button>`).join("");
     if (isAsk) { renderAskIntro(); return; }
     if (isCalc) { renderCalcView(); return; }
+    if (isSettings) { renderSettings(); return; }
     if (mode === "library") { loadLibrary().then(renderLibrary); return; }
     state.bundle = null;
     $("#results").innerHTML = "";
@@ -835,8 +912,9 @@
       const h = state.health;
       $("#status").innerHTML = ["PubMed", "Europe PMC", "OpenAlex", "ClinicalTrials.gov", "openFDA"].map((s) => `<span><span class="dot"></span>${s}</span>`).join("")
         + `<span title="Web search and page reading"><span class="dot ${h.tinyfish ? "" : "off"}"></span>TinyFish</span>`
-        + `<span title="${esc(h.model)}"><span class="dot ${h.agent_ready ? "" : "off"}"></span>Agent</span>`
+        + `<span title="${esc(h.model)}"><span id="agentDot" class="dot ${h.agent_ready ? "" : "off"}"></span>Agent</span>`
         + `<span title="${esc((h.ml || []).map((m) => `${m.component}: ${m.backend}`).join("\n"))}"><span class="dot"></span>ML models</span>`;
+      updateAgentStatus();
     } catch (_) { $("#status").textContent = "Server unreachable"; }
 
     $$(".modes button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
@@ -884,10 +962,27 @@
     $("#caseOut").addEventListener("click", (e) => { const b = e.target.closest("[data-calc]"); if (b) renderCalcView(b.dataset.calc); });
     $("#analyzeBtn").addEventListener("click", analyzeCase);
 
+    $("#settingsView").addEventListener("change", (e) => { if (e.target.name === "llmActive") markActiveCard(); });
+    $("#settingsView").addEventListener("click", (e) => {
+      const b = e.target.closest('[data-act="test"]');
+      if (b) testCard(b.closest(".llmcard").dataset.provider);
+    });
+    $("#llmSave").addEventListener("click", saveSettings);
+    $("#llmClear").addEventListener("click", () => {
+      try { localStorage.removeItem(LLM_KEY); } catch (_) { /* private mode */ }
+      if ($("#askEmpty")) $("#thread").innerHTML = "";
+      renderSettings(); updateAgentStatus();
+      toast("Saved keys cleared");
+    });
+    document.addEventListener("click", (e) => {
+      const g = e.target.closest("[data-goto]");
+      if (g) { e.preventDefault(); setMode(g.dataset.goto); }
+    });
+
     document.addEventListener("keydown", (e) => {
       const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
       if (e.key === "/" && !typing) { e.preventDefault(); (state.mode === "ask" ? $("#askInput") : $("#q"))?.focus(); return; }
-      if (typing || state.mode === "ask" || state.mode === "calc") return;
+      if (typing || state.mode === "ask" || state.mode === "calc" || state.mode === "settings") return;
       if (e.key === "j") select(Math.min(state.sel + 1, state.list.length - 1));
       if (e.key === "k") select(Math.max(state.sel - 1, 0));
       const cur = state.list[state.sel];
@@ -899,7 +994,7 @@
     await Promise.all([loadLibrary(), loadWatch()]);
     const last = storeGet("medagent.lastQuery", "");
     const savedMode = storeGet("medagent.mode", "evidence");
-    setMode(["ask", "calc"].includes(savedMode) ? savedMode : "evidence");
+    setMode(["ask", "calc", "settings"].includes(savedMode) ? savedMode : "evidence");
     if (last) $("#q").value = last;
   }
 

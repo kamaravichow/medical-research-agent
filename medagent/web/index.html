@@ -22,6 +22,7 @@
     <button role="tab" data-mode="drug">Drugs</button>
     <button role="tab" data-mode="calc">Calculators</button>
     <button role="tab" data-mode="library">Library</button>
+    <button role="tab" data-mode="settings">Settings</button>
   </nav>
   <div class="status" id="status" title="Connected sources"></div>
 </header>
@@ -97,6 +98,37 @@
     <button class="primary" id="analyzeBtn" type="button">Extract with clinical NLP</button>
     <div id="caseOut" class="caseout"></div>
   </aside>
+</main>
+
+<main class="settingsview" id="settingsView" hidden>
+  <section class="settings">
+    <h2>Model settings</h2>
+    <p class="muted">Use your own model for Ask. Keys are saved in this browser's local storage only and sent to this MedAgent server with each question; the server does not store them.</p>
+    <fieldset class="provider-pick">
+      <legend>Send Ask requests to</legend>
+      <label class="check"><input type="radio" name="llmActive" value="server" checked> Server default <span class="muted" id="serverModel"></span></label>
+      <label class="check"><input type="radio" name="llmActive" value="anthropic"> Anthropic-compatible endpoint</label>
+      <label class="check"><input type="radio" name="llmActive" value="openai"> OpenAI-compatible endpoint</label>
+    </fieldset>
+    <form class="llmcard" data-provider="anthropic" autocomplete="off">
+      <h3>Anthropic-compatible</h3>
+      <label>Base URL <input name="base_url" type="url" placeholder="https://api.anthropic.com (leave empty for default)"></label>
+      <label>API key <input name="api_key" type="password" placeholder="sk-ant-…" spellcheck="false"></label>
+      <label>Model <input name="model" type="text" placeholder="claude-sonnet-5" spellcheck="false"></label>
+      <div class="row"><button type="button" class="ghost" data-act="test">Test connection</button><span class="testmsg" aria-live="polite"></span></div>
+    </form>
+    <form class="llmcard" data-provider="openai" autocomplete="off">
+      <h3>OpenAI-compatible</h3>
+      <label>Base URL <input name="base_url" type="url" placeholder="https://api.openai.com/v1 (leave empty for default)"></label>
+      <label>API key <input name="api_key" type="password" placeholder="sk-…" spellcheck="false"></label>
+      <label>Model <input name="model" type="text" placeholder="gpt-5" spellcheck="false"></label>
+      <div class="row"><button type="button" class="ghost" data-act="test">Test connection</button><span class="testmsg" aria-live="polite"></span></div>
+    </form>
+    <div class="row">
+      <button type="button" class="primary" id="llmSave">Save</button>
+      <button type="button" class="ghost" id="llmClear">Clear saved keys</button>
+    </div>
+  </section>
 </main>
 
 <div class="popover" id="popover" role="tooltip" hidden></div>

@@ -22,7 +22,7 @@ from .ml.calculators import CalculatorError
 from .ml.effects import extract_effects
 from .ml.stats import DiagnosticIn, EffectIn, diagnostic_probability, treatment_effect
 from .skills import SkillRegistry
-from .agent import AgentService
+from .agent import AgentService, LLMConfig, make_model
 from .harness import ALL_SOURCES, ResearchHarness
 from .models import Article, SearchFilters
 from .providers.base import ProviderError
@@ -41,6 +41,11 @@ class SearchRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=3)
     conversation_id: str | None = None
+    llm: LLMConfig | None = Field(None, description="User-supplied model endpoint; falls back to the server's .env keys")
+
+
+class LLMTestRequest(BaseModel):
+    llm: LLMConfig
 
 
 class ReadRequest(BaseModel):
@@ -224,7 +229,7 @@ def create_app(harness: ResearchHarness | None = None, agent_service: AgentServi
     @app.post("/api/ask")
     async def ask(req: AskRequest):
         try:
-            return await agent().ask(req.question, req.conversation_id)
+            return await agent().ask(req.question, req.conversation_id, req.llm)
         except Exception as exc:
             raise HTTPException(500, str(exc))
 
@@ -233,11 +238,22 @@ def create_app(harness: ResearchHarness | None = None, agent_service: AgentServi
         async def events():
             try:
                 service = agent()
-                async for event in service.stream(req.question, req.conversation_id):
+                async for event in service.stream(req.question, req.conversation_id, req.llm):
                     yield {"event": event["type"], "data": json.dumps(event, default=str)}
             except Exception as exc:
                 yield {"event": "error", "data": json.dumps({"type": "error", "message": f"{exc.__class__.__name__}: {exc}"})}
         return EventSourceResponse(events())
+
+    @app.post("/api/llm/test")
+    async def llm_test(req: LLMTestRequest):
+        """Send a one-line prompt to a user-supplied endpoint so the Settings page can confirm it works."""
+        try:
+            model = make_model(h().settings, req.llm)
+            reply = await model.ainvoke("Reply with the single word OK.")
+        except Exception as exc:
+            return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"[:500]}
+        text = reply.content if isinstance(reply.content, str) else str(reply.content)
+        return {"ok": True, "reply": text[:200]}
 
     @app.get("/api/conversation/{cid}/sources")
     async def conversation_sources(cid: str):

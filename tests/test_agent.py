@@ -100,3 +100,35 @@ async def test_skills_routed_and_injected_into_system_prompt(harness):
     assert "## Skill: Drug dosing and safety" in model.seen[-1][0].content
     tool_out = next(e for e in events if e["type"] == "tool_end" and e["name"] == "run_calculator")
     assert "HAS-BLED: 3" in tool_out["preview"]
+
+
+def test_make_model_uses_user_endpoint(harness):
+    from langchain_anthropic import ChatAnthropic
+    from langchain_openai import ChatOpenAI
+
+    from medagent.agent import LLMConfig, make_model
+
+    oai = make_model(harness.settings, LLMConfig(provider="openai", api_key="sk-test", base_url="http://localhost:11434/v1", model="llama3"))
+    assert isinstance(oai, ChatOpenAI) and oai.model_name == "llama3" and oai.openai_api_base == "http://localhost:11434/v1"
+    ant = make_model(harness.settings, LLMConfig(provider="anthropic", api_key="sk-ant-test", base_url="", model="claude-sonnet-5"))
+    assert isinstance(ant, ChatAnthropic) and ant.model == "claude-sonnet-5" and ant.anthropic_api_key.get_secret_value() == "sk-ant-test"
+
+
+def test_conversation_rebuilds_agent_when_endpoint_changes(harness, monkeypatch):
+    import medagent.agent as agent_mod
+    from medagent.agent import LLMConfig
+
+    built = []
+
+    def fake_make_model(settings, llm=None):
+        built.append(llm)
+        return ScriptedModel(script=[AIMessage(content="ok")])
+
+    monkeypatch.setattr(agent_mod, "make_model", fake_make_model)
+    service = AgentService(harness)
+    a = LLMConfig(provider="openai", api_key="k1", model="m1")
+    conv = service._conversation("c1", a)
+    first = conv.agent
+    assert service._conversation("c1", a).agent is first and len(built) == 1
+    service._conversation("c1", LLMConfig(provider="anthropic", api_key="k2", model="m2"))
+    assert conv.agent is not first and built[-1].provider == "anthropic"

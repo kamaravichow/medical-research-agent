@@ -296,6 +296,7 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line); border-bottom-width
 @media (max-width: 760px) {
   body { height: auto; }
   .desk, .askview, .calcview { grid-template-columns: minmax(0, 1fr); }
+  .llmcard { grid-template-columns: minmax(0, 1fr); }
   .calclist, .calcform, .calccase { overflow: visible; }
   .rail, .results, .preview, .thread, .sources { overflow: visible; }
   .rail { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); order: 3; }
@@ -304,3 +305,21 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line); border-bottom-width
   .status { margin-left: 0; }
   .keys { display: none; }
 }
+
+/* ---------- settings */
+.settingsview { flex: 1; overflow: auto; padding-block: 12px; }
+.settings { max-width: 720px; display: flex; flex-direction: column; gap: 16px; }
+.settings h2 { font-family: var(--serif); margin: 0; }
+.settings p { margin: 0; }
+.provider-pick, .llmcard { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 12px 16px; margin: 0; }
+.provider-pick { display: flex; flex-direction: column; gap: 6px; }
+.provider-pick legend { font-weight: 600; padding: 0 4px; }
+.llmcard { display: grid; gap: 10px; }
+.llmcard h3 { margin: 0; font-size: 15px; }
+.llmcard label { display: grid; gap: 4px; font-size: 13px; color: var(--ink-2); }
+.llmcard input { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--ground); font-size: 14px; min-width: 0; }
+.llmcard.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.settings .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.settings .testmsg { font-size: 13px; overflow-wrap: anywhere; }
+.settings .testmsg.ok { color: var(--ok); }
+.settings .testmsg.bad { color: var(--danger); }

@@ -77,3 +77,11 @@ def test_ml_endpoints(client):
     assert len(skills) == 9
     health = client.get("/api/health").json()
     assert {m["component"] for m in health["ml"]} >= {"clinical_ner", "pico", "reranker", "calculators"}
+
+
+def test_llm_settings_validation(client):
+    bad = client.post("/api/ask", json={"question": "Does X help?", "llm": {"provider": "cohere", "api_key": "k", "model": "m"}})
+    assert bad.status_code == 422
+    r = client.post("/api/llm/test", json={"llm": {"provider": "openai", "api_key": "sk-x", "base_url": "http://127.0.0.1:9/v1", "model": "m"}})
+    assert r.status_code == 200 and r.json()["ok"] is False
+    assert "Settings" in client.get("/").text

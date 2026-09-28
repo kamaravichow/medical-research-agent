@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, dynamic_prompt
@@ -13,6 +13,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import BaseModel, Field
 
 from .config import Settings
 from .harness import ResearchHarness
@@ -61,11 +62,32 @@ Rules
 """
 
 
-def make_model(settings: Settings) -> BaseChatModel:
+class LLMConfig(BaseModel):
+    """A user-supplied model endpoint (from the web UI's Settings page), used instead of the server's .env keys."""
+
+    provider: Literal["anthropic", "openai"] = Field(..., description="API dialect: Anthropic Messages or OpenAI Chat Completions")
+    api_key: str = Field(..., min_length=1)
+    base_url: str | None = Field(None, description="Leave empty for the provider's official endpoint")
+    model: str = Field(..., min_length=1)
+
+    def fingerprint(self) -> tuple[str, str, str, str]:
+        return (self.provider, self.base_url or "", self.model, self.api_key)
+
+
+def make_model(settings: Settings, llm: LLMConfig | None = None) -> BaseChatModel:
     kwargs: dict[str, Any] = {"max_tokens": 4096}
     if settings.temperature is not None:
         kwargs["temperature"] = settings.temperature
-    return init_chat_model(settings.model, **kwargs)
+    if llm is None:
+        return init_chat_model(settings.model, **kwargs)
+    base_url = (llm.base_url or "").strip() or None
+    if llm.provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(model=llm.model, api_key=llm.api_key, base_url=base_url, **kwargs)
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(model=llm.model, api_key=llm.api_key, base_url=base_url, **kwargs)
 
 
 def build_agent(harness: ResearchHarness, registry: SourceRegistry, model: BaseChatModel | None = None, checkpointer=None,
@@ -107,6 +129,7 @@ class Conversation:
     registry: SourceRegistry = field(default_factory=SourceRegistry)
     skill_state: SkillState = field(default_factory=SkillState)
     agent: Any = None
+    llm_key: tuple | None = None
 
 
 class AgentService:
@@ -122,26 +145,30 @@ class AgentService:
         self._checkpointer = InMemorySaver()
         self._conversations: dict[str, Conversation] = {}
 
-    def _conversation(self, conversation_id: str | None) -> Conversation:
+    def _conversation(self, conversation_id: str | None, llm: LLMConfig | None = None) -> Conversation:
         cid = conversation_id or uuid.uuid4().hex[:12]
         conv = self._conversations.get(cid)
         if conv is None:
             conv = Conversation(id=cid)
-            model = self._model or make_model(self.harness.settings)
+            self._conversations[cid] = conv
+        llm_key = llm.fingerprint() if llm else None
+        if conv.agent is None or conv.llm_key != llm_key:
+            # (Re)build when the model endpoint changes; history survives via the shared checkpointer thread.
+            model = self._model or make_model(self.harness.settings, llm)
             conv.agent = build_agent(self.harness, conv.registry, model=model, checkpointer=self._checkpointer,
                                      skills=self.skills, state=conv.skill_state)
-            self._conversations[cid] = conv
+            conv.llm_key = llm_key
         return conv
 
     def sources(self, conversation_id: str) -> list[dict[str, Any]]:
         conv = self._conversations.get(conversation_id)
         return conv.registry.to_payload() if conv else []
 
-    async def ask(self, question: str, conversation_id: str | None = None) -> dict[str, Any]:
+    async def ask(self, question: str, conversation_id: str | None = None, llm: LLMConfig | None = None) -> dict[str, Any]:
         answer = ""
         cid = None
         sources: list[dict[str, Any]] = []
-        async for event in self.stream(question, conversation_id):
+        async for event in self.stream(question, conversation_id, llm):
             if event["type"] == "status":
                 cid = event["conversation_id"]
             elif event["type"] == "answer":
@@ -152,8 +179,9 @@ class AgentService:
                 raise RuntimeError(event["message"])
         return {"conversation_id": cid, "answer": answer, "sources": sources}
 
-    async def stream(self, question: str, conversation_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
-        conv = self._conversation(conversation_id)
+    async def stream(self, question: str, conversation_id: str | None = None,
+                     llm: LLMConfig | None = None) -> AsyncIterator[dict[str, Any]]:
+        conv = self._conversation(conversation_id, llm)
         yield {"type": "status", "conversation_id": conv.id, "message": "Planning searches…"}
         # Route to skills: keyword triggers + entities from the clinical NER model.
         try:
