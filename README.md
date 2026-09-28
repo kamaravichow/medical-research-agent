@@ -131,6 +131,21 @@ async def main():
 asyncio.run(main())
 ```
 
+## Deploy with Docker
+
+The `Dockerfile` builds a slim image that serves the web app with uvicorn on `$PORT` (default 8000), so it runs as-is on Render, Railway, Fly.io or Cloud Run.
+
+```bash
+docker build -t medagent .                          # lean image (~370 MB): rule-based fallbacks for the ML parts
+docker build -t medagent --build-arg EXTRAS=nlp .   # + scispaCy NER and NegEx
+docker build -t medagent --build-arg EXTRAS=ml .    # + MedCPT and BioELECTRA-PICO (CPU torch; needs 2 GB+ RAM)
+docker run --env-file .env -p 8000:8000 medagent
+```
+
+**Render:** push the repo, then in the dashboard choose **New → Blueprint** and select it. `render.yaml` sets up a Docker web service with `/api/health` as the health check. Enter `ANTHROPIC_API_KEY`, `TINYFISH_API_KEY` and the other secrets when prompted. You can also create a plain **Web Service** with runtime *Docker* and add the same environment variables. Render passes environment variables to the build as build args, so setting `EXTRAS=nlp` there turns on the NER model.
+
+Watch topics and the reading list are saved in `MEDAGENT_DATA_DIR` (`/app/data` in the image). Container disks are ephemeral, so attach a persistent disk at `/app/data` (on a paid Render plan) if you need them to survive redeploys.
+
 ## Architecture
 
 ```

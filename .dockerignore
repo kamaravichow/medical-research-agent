@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+*.egg-info
+build
+dist
+data
+.env
+.env.*
+!.env.example
+tests
+Dockerfile
+.dockerignore
+render.yaml

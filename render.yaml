@@ -1,0 +1,35 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# New > Blueprint in the Render dashboard, point it at this repo, then fill in the secret values.
+services:
+  - type: web
+    name: medagent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # The free plan (512 MB) runs the lean image. For bigger ML backends, pick a larger plan and set EXTRAS below.
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: MEDAGENT_MODEL
+        value: anthropic:claude-sonnet-5
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TINYFISH_API_KEY
+        sync: false
+      - key: NCBI_API_KEY
+        sync: false
+      - key: NCBI_EMAIL
+        sync: false
+      - key: OPENFDA_API_KEY
+        sync: false
+      - key: MEDAGENT_ML
+        value: auto
+      # Render passes env vars to the Docker build as build args. "nlp" adds scispaCy NER (~1 GB RAM);
+      # "ml" also adds MedCPT and BioELECTRA-PICO (needs 2 GB+). Leave empty for the lean image.
+      - key: EXTRAS
+        value: ""
+    # Watch topics and the reading list live in MEDAGENT_DATA_DIR. Without a disk they reset on each deploy.
+    # Persistent disks need a paid plan:
+    # disk:
+    #   name: medagent-data
+    #   mountPath: /app/data
+    #   sizeGB: 1
