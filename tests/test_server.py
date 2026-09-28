@@ -54,3 +54,26 @@ def test_library_export_and_watch_digest(client):
     second = client.get(f"/api/watch/{topic['id']}/digest").json()
     assert second["new_ids"] == []  # already seen
     assert client.delete(f"/api/watch/{topic['id']}").json()["ok"]
+
+
+def test_calculator_endpoints(client):
+    cat = client.get("/api/calculators").json()
+    assert any(c["name"] == "ckd_epi_2021" for c in cat)
+    r = client.post("/api/calculators/ckd_epi_2021", json={"inputs": {"age": 50, "sex": "female", "creatinine_mg_dl": 1.0}})
+    assert r.status_code == 200 and r.json()["value"] == 69
+    assert client.post("/api/calculators/ckd_epi_2021", json={"inputs": {"age": 50}}).status_code == 422
+
+
+def test_ml_endpoints(client):
+    a = client.post("/api/analyze", json={"text": "66-year-old man, creatinine 1.0 mg/dL, weight 80 kg"}).json()
+    assert a["findings"]["age"] == 66 and a["prefill"]["cockcroft_gault"]["missing"] == []
+    ap = client.post("/api/appraise", json={"text": "We randomly assigned 300 patients with sepsis to drug A or placebo. "
+                                                     "Mortality HR 0.8 (95% CI 0.65 to 0.98)."}).json()
+    assert ap["pico"]["sample_size"] == 300 and ap["effects"]["effects"][0]["significant"] is True
+    d = client.post("/api/stats/diagnostic", json={"pretest_probability": 0.3, "sensitivity": 0.95, "specificity": 0.9}).json()
+    assert 0.7 < d["posttest_if_positive"] < 0.85
+    assert client.post("/api/stats/effect", json={"control_risk": 0.2}).status_code == 422
+    skills = client.get("/api/skills").json()
+    assert len(skills) == 9
+    health = client.get("/api/health").json()
+    assert {m["component"] for m in health["ml"]} >= {"clinical_ner", "pico", "reranker", "calculators"}

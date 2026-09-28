@@ -159,6 +159,55 @@ def ask(question: str, show_sources: bool = typer.Option(True, "--sources/--no-s
 
 
 @app.command()
+def calc(name: Optional[str] = typer.Argument(None, help="Calculator name; omit to list them"),
+         params: list[str] = typer.Argument(None, help="key=value inputs, e.g. age=72 sex=female hypertension=true")):
+    """Run a validated clinical calculator: `medagent calc cha2ds2_vasc age=78 sex=female hypertension=true`."""
+    from .ml import calculators
+
+    if not name:
+        table = Table(title="Clinical calculators")
+        for col in ("Name", "Category", "Title"):
+            table.add_column(col)
+        for c in calculators.REGISTRY.values():
+            table.add_row(c.name, c.category, c.title)
+        console.print(table)
+        return
+    inputs = {}
+    for item in params or []:
+        key, _, raw = item.partition("=")
+        low = raw.lower()
+        inputs[key] = True if low == "true" else False if low == "false" else raw
+        try:
+            inputs[key] = float(raw) if "." in raw else int(raw)
+        except ValueError:
+            pass
+    try:
+        r = calculators.run(name, inputs)
+    except calculators.CalculatorError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    console.print(Panel(f"[bold]{r.value:g} {r.unit or ''}[/] {('— ' + r.band) if r.band else ''}\n{r.interpretation}\n\n"
+                        + "\n".join(f"[dim]• {c}[/]" for c in r.caveats), title=r.title, subtitle=calculators.REGISTRY[name].reference))
+
+
+@app.command()
+def skills(question: Optional[str] = typer.Argument(None, help="Show which skills a question would activate")):
+    """List the agent's clinical skills, or route a question to them."""
+    from .skills import SkillRegistry
+
+    reg = SkillRegistry()
+    if question:
+        from .ml.nlp import ClinicalNLP
+
+        labels = [e.label for e in ClinicalNLP().analyze(question).entities if not e.negated]
+        for m in reg.route(question, labels):
+            console.print(f"[bold]{m.skill.name}[/] score {m.score:g} ({', '.join(m.reasons)})")
+        return
+    for s in reg.skills.values():
+        console.print(f"[bold]{s.name}[/] — {s.description}")
+
+
+@app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False):
     """Run the web app (http://127.0.0.1:8000)."""
     import uvicorn

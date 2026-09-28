@@ -20,6 +20,7 @@
     <button role="tab" data-mode="new">What's new</button>
     <button role="tab" data-mode="trials">Trials</button>
     <button role="tab" data-mode="drug">Drugs</button>
+    <button role="tab" data-mode="calc">Calculators</button>
     <button role="tab" data-mode="library">Library</button>
   </nav>
   <div class="status" id="status" title="Connected sources"></div>
@@ -83,6 +84,18 @@
   <aside class="sources" id="askSources" aria-label="Sources">
     <h3>Sources <span id="srcCount" class="count"></span></h3>
     <div id="srcList" class="srclist"><p class="muted">Sources the agent consults appear here, numbered as they are cited.</p></div>
+  </aside>
+</main>
+
+<main class="calcview" id="calcView" hidden>
+  <aside class="calclist" id="calcList" aria-label="Calculators"></aside>
+  <section class="calcform" id="calcForm"></section>
+  <aside class="calccase" aria-label="Pre-fill from a case">
+    <h3>Pre-fill from a case</h3>
+    <label class="sr-only" for="caseText">Case text</label>
+    <textarea id="caseText" placeholder="Paste a vignette or note, e.g. 78-year-old woman with AF, hypertension and diabetes, no prior stroke. Weight 58 kg, height 160 cm, creatinine 1.3."></textarea>
+    <button class="primary" id="analyzeBtn" type="button">Extract with clinical NLP</button>
+    <div id="caseOut" class="caseout"></div>
   </aside>
 </main>
 

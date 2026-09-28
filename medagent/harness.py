@@ -15,6 +15,7 @@ from typing import Awaitable, Iterable
 
 from . import evidence
 from .config import Settings, get_settings
+from .ml import ModelHub
 from .models import (
     AdverseEventSummary,
     Article,
@@ -43,7 +44,7 @@ ALL_SOURCES = ARTICLE_SOURCES + ("clinicaltrials", "guidelines")
 
 
 class ResearchHarness:
-    def __init__(self, settings: Settings | None = None, *, tinyfish_client=None):
+    def __init__(self, settings: Settings | None = None, *, tinyfish_client=None, ml: ModelHub | None = None):
         self.settings = settings or get_settings()
         self.http = make_client(self.settings.http_timeout)
         s = self.settings
@@ -53,6 +54,7 @@ class ResearchHarness:
         self.trials_api = ClinicalTrialsClient(self.http)
         self.openfda = OpenFDAClient(self.http, api_key=s.openfda_api_key)
         self.tinyfish = TinyFishClient(s.tinyfish_api_key, client=tinyfish_client)
+        self.ml = ml or ModelHub(s)
 
     async def aclose(self) -> None:
         await self.http.aclose()
@@ -116,8 +118,13 @@ class ResearchHarness:
         query: str,
         filters: SearchFilters | None = None,
         sources: Iterable[str] = ALL_SOURCES,
+        rerank_question: str | None = None,
     ) -> SearchBundle:
-        """Federated search: fan out to every source at once, merge, grade and rank."""
+        """Federated search: fan out to every source at once, merge, grade and rank.
+
+        With `rerank_question`, relevance to that question (MedCPT cross-encoder, or BM25) replaces the
+        providers' own ordering and carries more weight in the final ranking.
+        """
         filters = filters or SearchFilters()
         sources = set(sources)
         per_source = min(filters.max_results, 40)
@@ -141,7 +148,18 @@ class ResearchHarness:
         merged = [evidence.annotate(a) for a in evidence.dedupe(articles)]
         merged = self._apply_filters(merged, filters)
         await self._enrich_citations(merged)
-        ranked = evidence.rank(merged)[: filters.max_results]
+        relevance_backend = None
+        relevance_weight = 0.1
+        if rerank_question and merged:
+            try:
+                rel, relevance_backend = await asyncio.wait_for(self.ml.rerank(rerank_question, merged), 30)
+                for art, r in zip(merged, rel):
+                    art.relevance = round(r, 4)
+                    art.score = r
+                relevance_weight = 0.35
+            except Exception as exc:
+                statuses.append(ProviderStatus(provider="reranker", ok=False, error=f"{exc.__class__.__name__}: {exc}"))
+        ranked = evidence.rank(merged, relevance_weight=relevance_weight)[: filters.max_results]
         counts = Counter(a.design.value for a in ranked)
         return SearchBundle(
             query=query,
@@ -150,6 +168,7 @@ class ResearchHarness:
             web=[w for w in (results.get("guidelines") or []) if isinstance(w, WebResult)],
             providers=statuses,
             evidence_counts=dict(counts),
+            relevance_backend=relevance_backend,
         )
 
     async def whats_new(self, topic: str, days: int = 30, limit: int = 30, include_news: bool = True) -> SearchBundle:

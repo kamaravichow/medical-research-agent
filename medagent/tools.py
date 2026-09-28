@@ -4,7 +4,7 @@ text for the model and records the full objects in the SourceRegistry."""
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -14,7 +14,11 @@ from .harness import ResearchHarness
 from .models import Article, SearchFilters, StudyDesign, WebResult
 from .providers.base import ProviderError
 from .providers.tinyfish import TinyFishNotConfigured
+from .ml.effects import extract_effects
 from .sources import SourceRegistry, brief_article, brief_trial, brief_web
+
+if TYPE_CHECKING:
+    from .skills import SkillRegistry, SkillState
 
 
 def _clip(text: str | None, n: int) -> str:
@@ -76,8 +80,9 @@ class ReadArgs(BaseModel):
     focus: str | None = Field(None, description="What to look for on the page; returns the most relevant passages first.")
 
 
-def build_tools(harness: ResearchHarness, registry: SourceRegistry) -> list[BaseTool]:
-    """Tools bound to one harness and one conversation's citation registry."""
+def build_tools(harness: ResearchHarness, registry: SourceRegistry, state: "SkillState | None" = None,
+                skills: "SkillRegistry | None" = None) -> list[BaseTool]:
+    """Tools bound to one harness, one conversation's citation registry and its active skills."""
 
     def register_articles(articles: list[Article]) -> str:
         if not articles:
@@ -88,11 +93,13 @@ def build_tools(harness: ResearchHarness, registry: SourceRegistry) -> list[Base
                                 open_access_only: bool = False, include_preprints: bool = True, max_results: int = 12) -> str:
         filters = SearchFilters(year_from=year_from, designs=study_designs or [], open_access_only=open_access_only,
                                 include_preprints=include_preprints, max_results=max_results)
-        bundle = await harness.search(query, filters, sources=("pubmed", "europepmc", "openalex"))
+        question = (state.question if state and state.question else None) or query
+        bundle = await harness.search(query, filters, sources=("pubmed", "europepmc", "openalex"), rerank_question=question)
         failed = [p for p in bundle.providers if not p.ok]
         note = ("\n(Unavailable sources: " + ", ".join(f"{p.provider}: {p.error}" for p in failed) + ")") if failed else ""
         counts = ", ".join(f"{k}={v}" for k, v in sorted(bundle.evidence_counts.items()))
-        return f"Ranked by evidence level, recency and citations. Designs: {counts or 'none'}\n" + register_articles(bundle.articles) + note
+        how = f"evidence level, recency, citations and question relevance ({bundle.relevance_backend})" if bundle.relevance_backend else "evidence level, recency and citations"
+        return f"Ranked by {how}. Designs: {counts or 'none'}\n" + register_articles(bundle.articles) + note
 
     async def find_new_research(topic: str, days: int = 30, max_results: int = 12) -> str:
         bundle = await harness.whats_new(topic, days=days, limit=max_results, include_news=False)
@@ -160,6 +167,13 @@ def build_tools(harness: ResearchHarness, registry: SourceRegistry) -> list[Base
             extras.append("MeSH: " + "; ".join(art.mesh_terms[:12]))
         if art.publication_types:
             extras.append("Types: " + "; ".join(art.publication_types))
+        report = extract_effects(art.abstract or "")
+        if report.effects:
+            extras.append("Extracted effect estimates: " + "; ".join(
+                f"{e.measure} {e.value:g}" + (f" (95% CI {e.ci_low:g}–{e.ci_high:g})" if e.ci_low is not None else "")
+                + (f" {e.p_value}" if e.p_value else "") for e in report.effects[:8]))
+        if report.arm_percentages:
+            extras.append("Arm event rates: " + "; ".join(report.arm_percentages[:4]))
         return f"{brief_article(n, art)}\n  Full abstract:\n{sections}\n  " + "\n  ".join(extras)
 
     async def search_web(query: str, kind: str = "guidelines", days: int | None = None, max_results: int = 8) -> str:
@@ -218,10 +232,14 @@ def build_tools(harness: ResearchHarness, registry: SourceRegistry) -> list[Base
          "TinyFish fetch: read the full text of a URL or cited source (open-access full text, guideline pages, label PDFs). Pass `focus` to get the key passages."),
     ]
 
+    from .ml_tools import ml_specs
+
+    specs += ml_specs(harness, registry, state, skills)
     tools: list[BaseTool] = []
     for fn, schema, name, description in specs:
         tools.append(StructuredTool.from_function(
             coroutine=_guard(fn), name=name, description=description, args_schema=schema,
+            handle_validation_error=True,
         ))
     return tools
 

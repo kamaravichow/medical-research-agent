@@ -72,3 +72,31 @@ async def test_agent_stream_emits_tools_sources_and_answer(harness):
     model.calls = 1
     result = await service.ask("And in HFrEF?", conversation_id=cid)
     assert result["conversation_id"] == cid and len(service.sources(cid)) == 3
+
+
+class CapturingModel(ScriptedModel):
+    seen: list = []
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.seen.append(messages)
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+async def test_skills_routed_and_injected_into_system_prompt(harness):
+    model = CapturingModel(seen=[], script=[
+        AIMessage(content="", tool_calls=[{"name": "run_calculator", "id": "c1",
+                                            "args": {"name": "has_bled", "inputs": {"age_over_65": True, "antiplatelet_or_nsaid": True, "labile_inr": True}}}]),
+        AIMessage(content="", tool_calls=[{"name": "load_skill", "id": "c2", "args": {"name": "drug-dosing-safety"}}]),
+        AIMessage(content="HAS-BLED is 3 (high)."),
+    ])
+    service = AgentService(harness, model=model)
+    events = [e async for e in service.stream("Calculate the HAS-BLED score for my patient on warfarin")]
+    skills_ev = next(e for e in events if e["type"] == "skills")
+    assert "risk-scores" in [s["name"] for s in skills_ev["items"]]
+    first_system = model.seen[0][0].content
+    assert "## Skill: Risk scores" in first_system and "run_calculator" in first_system
+    assert "## Skill: Drug dosing" not in first_system
+    # load_skill takes effect on the next model call
+    assert "## Skill: Drug dosing and safety" in model.seen[-1][0].content
+    tool_out = next(e for e in events if e["type"] == "tool_end" and e["name"] == "run_calculator")
+    assert "HAS-BLED: 3" in tool_out["preview"]

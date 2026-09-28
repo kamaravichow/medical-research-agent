@@ -230,8 +230,11 @@ def _merge_into(base: Article, other: Article) -> None:
         base.id = f"pmid:{base.pmid}"
 
 
-def score(article: Article, today: date | None = None) -> float:
-    """Blend evidence strength, recency, citations and query rank (higher = better)."""
+def score(article: Article, today: date | None = None, relevance_weight: float = 0.1) -> float:
+    """Blend evidence strength, recency, citations and relevance (higher = better).
+
+    `article.score` holds a 0..1 relevance on input (provider rank, or a reranker's score).
+    """
     today = today or date.today()
     strength = (6 - article.evidence_level) / 5  # 1.0 .. 0.2
     if article.year:
@@ -240,7 +243,8 @@ def score(article: Article, today: date | None = None) -> float:
     else:
         recency = 0.3
     citations = math.log1p(article.cited_by or 0) / math.log1p(2000)
-    value = 0.45 * strength + 0.3 * recency + 0.15 * min(citations, 1.0) + 0.1 * article.score
+    rest = 1 - relevance_weight
+    value = rest * (0.5 * strength + (1 / 3) * recency + (1 / 6) * min(citations, 1.0)) + relevance_weight * article.score
     if article.is_retracted:
         value -= 1.0
     if article.is_preprint:
@@ -250,10 +254,10 @@ def score(article: Article, today: date | None = None) -> float:
     return round(value, 4)
 
 
-def rank(articles: list[Article], today: date | None = None) -> list[Article]:
-    """`article.score` should hold a 0..1 provider relevance on input; it is replaced by the final score."""
+def rank(articles: list[Article], today: date | None = None, relevance_weight: float = 0.1) -> list[Article]:
+    """`article.score` should hold a 0..1 relevance on input; it is replaced by the final score."""
     for art in articles:
-        art.score = score(art, today)
+        art.score = score(art, today, relevance_weight)
     return sorted(articles, key=lambda a: a.score, reverse=True)
 
 

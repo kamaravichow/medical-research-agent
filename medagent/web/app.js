@@ -21,6 +21,7 @@
     new: ["GLP-1 receptor agonists", "long COVID", "Alzheimer's disease anti-amyloid", "CAR-T lymphoma"],
     trials: ["glioblastoma", "type 1 diabetes teplizumab", "MASH resmetirom", "pancreatic cancer"],
     drug: ["apixaban", "tirzepatide", "amiodarone", "valproate"],
+    calc: [],
     library: [],
   };
 
@@ -178,7 +179,9 @@
         <button data-act="save">${saved ? "Saved ✓" : "Save"}</button>
         <button data-act="cite">Copy citation</button>
         <button data-act="ask">Ask about this</button>
+        ${a.abstract ? `<button data-act="appraise">Extract PICO & effects</button>` : ""}
       </div>
+      <div id="appraisal"></div>
       ${sections}
       ${a.mesh_terms?.length ? `<div class="section"><h5>MeSH</h5><div class="tags">${a.mesh_terms.slice(0, 16).map((m) => `<span>${esc(m)}</span>`).join("")}</div></div>` : ""}
       ${a.publication_types?.length ? `<div class="section"><h5>Publication type</h5><div class="tags">${a.publication_types.map((m) => `<span>${esc(m)}</span>`).join("")}</div></div>` : ""}
@@ -248,6 +251,7 @@
       $("#askInput").focus();
     }
     if (act === "read") readInline(btn.dataset.url, $("#q").value || item.title);
+    if (act === "appraise") appraise(item);
   }
 
   async function readInline(url, focus) {
@@ -262,6 +266,112 @@
         <pre>${esc(page.text || "No readable text.")}</pre>`;
     } catch (err) {
       r.innerHTML = `<p class="err">Could not read this page: ${esc(err.message)}</p>`;
+    }
+  }
+
+  async function appraise(a) {
+    const box = $("#appraisal");
+    box.innerHTML = `<div class="skeleton" style="height:120px"></div>`;
+    try {
+      const { pico, effects } = await api("/api/appraise", { method: "POST", body: { text: `${a.title}. ${a.abstract || ""}` } });
+      const row = (label, items) => `<dt>${label}</dt><dd>${items?.length ? items.map(esc).join("; ") : '<span class="muted">not found</span>'}</dd>`;
+      const eff = effects.effects;
+      box.innerHTML = `<div class="section"><h5>PICO · ${esc(pico.backend)}</h5><dl class="pico">
+          ${row("P", pico.population)}${row("I", pico.intervention)}${row("C", pico.comparator)}${row("O", pico.outcomes)}
+          ${pico.sample_size ? `<dt>n</dt><dd class="num">${fmtN(pico.sample_size)}</dd>` : ""}</dl></div>
+        <div class="section"><h5>Effect estimates · deterministic extraction</h5>
+        ${eff.length ? `<div style="overflow-x:auto"><table class="effects"><thead><tr><th>Measure</th><th>Estimate</th><th>95% CI</th><th>P</th><th></th></tr></thead><tbody>
+          ${eff.map((e) => `<tr><td>${esc(e.measure)}</td><td class="num">${e.value}</td><td class="num">${e.ci_low != null ? `${e.ci_low} to ${e.ci_high}` : "—"}</td><td>${esc(e.p_value || "")}</td>
+            <td>${e.significant === true ? '<span class="badge oa">significant</span>' : e.significant === false ? '<span class="badge plain">CI crosses null</span>' : ""}</td></tr>`).join("")}
+          </tbody></table></div>` : `<p class="muted">No effect estimates in the abstract.</p>`}
+        ${effects.arm_percentages.length ? `<p class="muted">Arm event rates: ${effects.arm_percentages.map(esc).join("; ")}</p>` : ""}
+        ${effects.nnt.length ? `<p class="muted">${effects.nnt.map(esc).join("; ")}</p>` : ""}</div>`;
+    } catch (err) {
+      box.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+    }
+  }
+
+  // ------------------------------------------------------------- calculators
+  const LOW_BANDS = /^(low|normal|pe unlikely|perc negative|class a|not high risk|g1|g2|>=60|<10|underweight|normal)$/i;
+  const HIGH_BANDS = /(high|severe|class c|markedly|pe likely|perc positive|g4|g5|<15|≥30|obesity class iii|elevated)/i;
+
+  function fieldSpec(name, prop, required) {
+    let p = prop;
+    if (prop.anyOf) p = { ...prop, ...(prop.anyOf.find((x) => x.type !== "null") || {}) };
+    const label = (p.title || name).replace(/_/g, " ");
+    return { name, label, type: p.enum ? "enum" : p.type, enumv: p.enum, min: p.minimum ?? p.exclusiveMinimum, max: p.maximum ?? p.exclusiveMaximum, desc: prop.description || p.description, required, def: prop.default };
+  }
+
+  async function renderCalcView(selectName) {
+    if (!state.calcs) {
+      try { state.calcs = await api("/api/calculators"); } catch (err) { $("#calcForm").innerHTML = `<p class="err">${esc(err.message)}</p>`; return; }
+    }
+    const cats = [...new Set(state.calcs.map((c) => c.category))];
+    const cur = selectName || state.calcSel || state.calcs[0].name;
+    state.calcSel = cur;
+    $("#calcList").innerHTML = cats.map((cat) => `<h4>${esc(cat)}</h4>` + state.calcs.filter((c) => c.category === cat)
+      .map((c) => `<button type="button" data-calc="${c.name}" class="${c.name === cur ? "on" : ""}">${esc(c.title)}</button>`).join("")).join("");
+    const c = state.calcs.find((x) => x.name === cur);
+    const props = c.schema.properties || {};
+    const req = new Set(c.schema.required || []);
+    const pre = state.prefill?.[cur]?.inputs || {};
+    const fields = Object.entries(props).map(([k, v]) => fieldSpec(k, v, req.has(k)));
+    $("#calcForm").innerHTML = `<h2>${esc(c.title)}</h2><p class="muted" style="margin:0">${esc(c.description)}</p>
+      <form id="calcInputs"><div class="fields">${fields.map((f) => {
+        const val = pre[f.name] ?? f.def;
+        const filled = pre[f.name] !== undefined ? " filled" : "";
+        const hint = f.desc ? `<small>${esc(f.desc)}</small>` : "";
+        if (f.type === "boolean") return `<label class="field bool${filled}"><input type="checkbox" name="${f.name}" ${val ? "checked" : ""}><span>${esc(f.label)}${hint ? "<br>" + hint : ""}</span></label>`;
+        if (f.type === "enum") return `<label class="field${filled}"><span>${esc(f.label)}${f.required ? "" : " (optional)"}</span><select name="${f.name}">${f.required ? "" : '<option value="">—</option>'}${f.enumv.map((o) => `<option value="${esc(o)}" ${String(val) === String(o) ? "selected" : ""}>${esc(String(o).replace(/_/g, " "))}</option>`).join("")}</select>${hint}</label>`;
+        return `<label class="field${filled}"><span>${esc(f.label)}${f.required ? "" : " (optional)"}</span><input type="number" step="any" name="${f.name}" value="${val ?? ""}" ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""} ${f.required ? "required" : ""}>${hint}</label>`;
+      }).join("")}</div><button class="primary" type="submit">Calculate</button></form>
+      <div id="calcResult"></div>
+      <p class="muted" style="font-size:12px;margin-top:14px">${esc(c.reference)}</p>`;
+    $("#calcInputs").onsubmit = async (e) => {
+      e.preventDefault();
+      const inputs = {};
+      fields.forEach((f) => {
+        const el = e.target.elements[f.name];
+        if (f.type === "boolean") inputs[f.name] = el.checked;
+        else if (el.value !== "") inputs[f.name] = f.type === "enum" ? (typeof f.enumv[0] === "number" ? Number(el.value) : el.value) : Number(el.value);
+      });
+      const out = $("#calcResult");
+      try {
+        const r = await api(`/api/calculators/${cur}`, { method: "POST", body: { inputs } });
+        const cls = HIGH_BANDS.test(r.band || "") ? "b-high" : LOW_BANDS.test(r.band || "") ? "b-low" : "b-mid";
+        out.innerHTML = `<div class="result ${cls}"><div><span class="big">${r.value}</span><span class="unit">${esc(r.unit || "")}</span>
+          ${r.band ? `<span class="badge plain" style="margin-left:8px">${esc(r.band)}</span>` : ""}</div>
+          <p style="margin:8px 0 0">${esc(r.interpretation)}</p>
+          ${Object.keys(r.details || {}).length ? `<p class="muted" style="margin:6px 0 0">${Object.entries(r.details).map(([k, v]) => `${esc(k.replace(/_/g, " "))}: ${esc(v)}`).join(" · ")}</p>` : ""}
+          ${r.caveats.length ? `<ul>${r.caveats.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+          <div class="actions"><button type="button" id="copyCalc">Copy result</button></div></div>`;
+        $("#copyCalc").onclick = () => copy(`${r.title}: ${r.value}${r.unit ? " " + r.unit : ""}${r.band ? " (" + r.band + ")" : ""}. ${r.interpretation} Inputs: ${JSON.stringify(r.inputs)}`);
+      } catch (err) {
+        out.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+      }
+    };
+  }
+
+  async function analyzeCase() {
+    const text = $("#caseText").value.trim();
+    if (text.length < 3) return;
+    const out = $("#caseOut");
+    out.innerHTML = `<div class="skeleton"></div>`;
+    try {
+      const { findings: f, prefill } = await api("/api/analyze", { method: "POST", body: { text } });
+      state.prefill = prefill;
+      const ents = f.entities.map((e) => `<span class="ent ${e.label}${e.negated ? " neg" : ""}" title="${e.label.toLowerCase()}${e.negated ? ", negated" : ""}">${esc(e.expansion || e.text)}</span>`).join("");
+      const labs = f.measurements.map((m) => `${esc(m.name.replace(/_/g, " "))} <b class="num">${m.value}</b>`).join(" · ");
+      const calcBtns = Object.entries(prefill).sort((a, b) => a[1].missing.length - b[1].missing.length)
+        .filter(([, v]) => v.missing.length <= 3)
+        .map(([k, v]) => `<button type="button" class="readycalc${v.missing.length ? "" : " ok"}" data-calc="${k}" title="${v.missing.length ? "Missing: " + esc(v.missing.join(", ")) : "All required inputs found"}">${esc(state.calcs?.find((c) => c.name === k)?.title || k)}</button>`).join("");
+      out.innerHTML = `<div class="muted">Model: ${esc(f.backend)}${f.age ? ` · ${f.age} y` : ""}${f.sex ? ` · ${esc(f.sex)}` : ""}</div>
+        ${ents ? `<div>${ents}</div><div class="muted" style="font-size:11.5px">Struck-through entities are negated (pertinent negatives).</div>` : ""}
+        ${labs ? `<div>${labs}</div>` : ""}
+        ${calcBtns ? `<div><div class="muted" style="margin-bottom:4px">Calculators with inputs found (green = ready):</div>${calcBtns}</div>` : ""}`;
+      renderCalcView(state.calcSel);
+    } catch (err) {
+      out.innerHTML = `<p class="err">${esc(err.message)}</p>`;
     }
   }
 
@@ -600,10 +710,15 @@
     search_literature: "Searching literature", find_new_research: "Checking newest research", search_clinical_trials: "Searching trials",
     get_trial_details: "Reading trial record", drug_label: "Reading FDA label", drug_adverse_events: "Checking FAERS", get_article: "Reading abstract",
     search_web: "Searching guidelines & web", read_source: "Reading full text",
+    analyze_clinical_text: "Clinical NLP on the case", extract_pico: "Extracting PICO", extract_effect_sizes: "Extracting effect sizes",
+    list_calculators: "Listing calculators", run_calculator: "Running calculator", diagnostic_probability: "Bayes post-test probability",
+    treatment_effect: "Computing ARR / NNT", load_skill: "Loading skill",
   };
 
   function argSummary(args) {
-    const v = args.query || args.topic || args.condition || args.drug || args.nct_id || args.identifier || args.target || args.intervention || "";
+    if (args.name && args.inputs) return `${args.name} ${JSON.stringify(args.inputs).slice(0, 80)}`;
+    const v = args.query || args.topic || args.condition || args.drug || args.nct_id || args.identifier || args.target || args.intervention
+      || args.source || args.text || args.name || (args.pretest_probability != null ? `pre-test ${args.pretest_probability}` : "") || "";
     return String(v).slice(0, 90);
   }
 
@@ -640,6 +755,12 @@
           let ev;
           try { ev = JSON.parse(data); } catch (_) { continue; }
           if (ev.type === "status") { state.conv = ev.conversation_id; }
+          else if (ev.type === "skills") {
+            const ner = ev.ner && ev.ner.backend !== "rules"
+              ? `<span>NER: ${ev.ner.conditions.length} conditions, ${ev.ner.medications.length} drugs${ev.ner.negated.length ? `, ${ev.ner.negated.length} negated` : ""}</span>` : "";
+            activity.insertAdjacentHTML("beforebegin", `<div class="skillbar">${ev.items.length ? "Skills" : "No specialised skill matched"}
+              ${ev.items.map((k) => `<span class="skillchip" title="${esc(k.reasons.join(", "))}">${esc(k.title)}</span>`).join("")}${ner}</div>`);
+          }
           else if (ev.type === "token") { draft += ev.text; answer.innerHTML = mdToHtml(draft); }
           else if (ev.type === "tool_start") {
             if (draft.trim()) { activity.insertAdjacentHTML("beforeend", `<div class="step">${esc(draft.trim().slice(0, 200))}</div>`); }
@@ -686,10 +807,11 @@
     state.mode = mode;
     storeSet("medagent.mode", mode);
     $$(".modes button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.mode === mode)));
-    const isAsk = mode === "ask";
+    const isAsk = mode === "ask", isCalc = mode === "calc";
     $("#askView").hidden = !isAsk;
-    $("#desk").hidden = isAsk;
-    $("#searchForm").hidden = isAsk || mode === "library";
+    $("#calcView").hidden = !isCalc;
+    $("#desk").hidden = isAsk || isCalc;
+    $("#searchForm").hidden = isAsk || isCalc || mode === "library";
     $("#desk").classList.toggle("no-rail", mode === "drug" || mode === "trials");
     $("#days").hidden = mode !== "new";
     $("#watchBtn").hidden = mode !== "new";
@@ -699,6 +821,7 @@
     $("#q").placeholder = { evidence: "e.g. SGLT2 inhibitors in HFpEF", new: "Topic to scan for new research", trials: "Condition or intervention", drug: "Generic or brand name" }[mode] || "";
     $("#examples").innerHTML = (EXAMPLES[mode] || []).map((e) => `<button type="button">${esc(e)}</button>`).join("");
     if (isAsk) { renderAskIntro(); return; }
+    if (isCalc) { renderCalcView(); return; }
     if (mode === "library") { loadLibrary().then(renderLibrary); return; }
     state.bundle = null;
     $("#results").innerHTML = "";
@@ -712,7 +835,8 @@
       const h = state.health;
       $("#status").innerHTML = ["PubMed", "Europe PMC", "OpenAlex", "ClinicalTrials.gov", "openFDA"].map((s) => `<span><span class="dot"></span>${s}</span>`).join("")
         + `<span title="Web search and page reading"><span class="dot ${h.tinyfish ? "" : "off"}"></span>TinyFish</span>`
-        + `<span title="${esc(h.model)}"><span class="dot ${h.agent_ready ? "" : "off"}"></span>Agent</span>`;
+        + `<span title="${esc(h.model)}"><span class="dot ${h.agent_ready ? "" : "off"}"></span>Agent</span>`
+        + `<span title="${esc((h.ml || []).map((m) => `${m.component}: ${m.backend}`).join("\n"))}"><span class="dot"></span>ML models</span>`;
     } catch (_) { $("#status").textContent = "Server unreachable"; }
 
     $$(".modes button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
@@ -756,10 +880,14 @@
       if (c.classList.contains("src") && url) window.open(url, "_blank", "noopener");
     });
 
+    $("#calcList").addEventListener("click", (e) => { const b = e.target.closest("[data-calc]"); if (b) renderCalcView(b.dataset.calc); });
+    $("#caseOut").addEventListener("click", (e) => { const b = e.target.closest("[data-calc]"); if (b) renderCalcView(b.dataset.calc); });
+    $("#analyzeBtn").addEventListener("click", analyzeCase);
+
     document.addEventListener("keydown", (e) => {
       const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
       if (e.key === "/" && !typing) { e.preventDefault(); (state.mode === "ask" ? $("#askInput") : $("#q"))?.focus(); return; }
-      if (typing || state.mode === "ask") return;
+      if (typing || state.mode === "ask" || state.mode === "calc") return;
       if (e.key === "j") select(Math.min(state.sel + 1, state.list.length - 1));
       if (e.key === "k") select(Math.max(state.sel - 1, 0));
       const cur = state.list[state.sel];
@@ -770,7 +898,8 @@
 
     await Promise.all([loadLibrary(), loadWatch()]);
     const last = storeGet("medagent.lastQuery", "");
-    setMode(storeGet("medagent.mode", "evidence") === "ask" ? "ask" : "evidence");
+    const savedMode = storeGet("medagent.mode", "evidence");
+    setMode(["ask", "calc"].includes(savedMode) ? savedMode : "evidence");
     if (last) $("#q").value = last;
   }
 

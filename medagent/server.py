@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from . import citations
+from .ml import calculators, prefill_calculator
+from .ml.calculators import CalculatorError
+from .ml.effects import extract_effects
+from .ml.stats import DiagnosticIn, EffectIn, diagnostic_probability, treatment_effect
+from .skills import SkillRegistry
 from .agent import AgentService
 from .harness import ALL_SOURCES, ResearchHarness
 from .models import Article, SearchFilters
@@ -48,6 +53,14 @@ class ExportRequest(BaseModel):
     format: Literal["ris", "bibtex", "vancouver"] = "ris"
 
 
+class TextRequest(BaseModel):
+    text: str = Field(..., min_length=3, max_length=50_000)
+
+
+class CalcRequest(BaseModel):
+    inputs: dict = Field(default_factory=dict)
+
+
 class WatchRequest(BaseModel):
     query: str = Field(..., min_length=2)
     days: int = Field(30, ge=1, le=365)
@@ -61,6 +74,10 @@ def create_app(harness: ResearchHarness | None = None, agent_service: AgentServi
         state["harness"] = harness or ResearchHarness()
         state["agent"] = agent_service
         state["store"] = Store(state["harness"].settings.data_dir)
+        # Load the NER model before accepting requests. Loading holds the GIL for ~20 s, so doing it in the
+        # background would stall every request made meanwhile; a slower start-up is the better trade.
+        if state["harness"].settings.preload_models:
+            await state["harness"].ml.warm()
         yield
         if harness is None:
             await state["harness"].aclose()
@@ -93,7 +110,54 @@ def create_app(harness: ResearchHarness | None = None, agent_service: AgentServi
             "tinyfish": h().tinyfish.enabled,
             "ncbi_key": bool(s.ncbi_api_key),
             "sources": ["PubMed", "Europe PMC", "OpenAlex", "ClinicalTrials.gov", "openFDA"] + (["TinyFish Search/Fetch"] if h().tinyfish.enabled else []),
+            "ml": h().ml.status(),
         }
+
+    # -------------------------------------------------- ML models / skills
+    @app.get("/api/skills")
+    async def list_skills():
+        registry = agent().skills if state.get("agent") else SkillRegistry()
+        return [{"name": sk.name, "title": sk.title, "description": sk.description, "tools": sk.tools}
+                for sk in registry.skills.values()]
+
+    @app.get("/api/calculators")
+    async def list_calculators():
+        return calculators.catalogue()
+
+    @app.post("/api/calculators/{name}")
+    async def run_calculator(name: str, req: CalcRequest):
+        try:
+            return calculators.run(name, req.inputs)
+        except CalculatorError as exc:
+            raise HTTPException(422, str(exc))
+
+    @app.post("/api/analyze")
+    async def analyze(req: TextRequest):
+        """Clinical NER + negation + labs, and calculator inputs pre-filled from the text."""
+        findings = await h().ml.analyze(req.text)
+        prefills = {}
+        for name in calculators.REGISTRY:
+            params, missing = prefill_calculator(name, findings)
+            if params:
+                prefills[name] = {"inputs": params, "missing": missing}
+        return {"findings": findings, "prefill": prefills}
+
+    @app.post("/api/appraise")
+    async def appraise(req: TextRequest):
+        """PICO (transformer or rules) + deterministic effect-size extraction for an abstract."""
+        pico = await h().ml.extract_pico(req.text)
+        return {"pico": pico, "effects": extract_effects(req.text)}
+
+    @app.post("/api/stats/diagnostic")
+    async def stats_diagnostic(req: DiagnosticIn):
+        return diagnostic_probability(req)
+
+    @app.post("/api/stats/effect")
+    async def stats_effect(req: EffectIn):
+        try:
+            return treatment_effect(req)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
 
     # ---------------------------------------------------------- search
     @app.post("/api/search")

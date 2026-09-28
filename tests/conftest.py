@@ -42,7 +42,9 @@ class FakeTinyFish:
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(MEDAGENT_DATA_DIR=tmp_path, TINYFISH_API_KEY="tf-test", MEDAGENT_MODEL="anthropic:claude-sonnet-5")
+    # Deterministic fallbacks by default; tests that exercise the real NER model use `ner` below.
+    return Settings(MEDAGENT_DATA_DIR=tmp_path, TINYFISH_API_KEY="tf-test", MEDAGENT_MODEL="anthropic:claude-sonnet-5",
+                    MEDAGENT_ML="rules")
 
 
 @pytest.fixture
@@ -75,3 +77,22 @@ async def harness(settings, mock_apis, fake_tinyfish):
     h = ResearchHarness(settings, tinyfish_client=fake_tinyfish)
     yield h
     await h.aclose()
+
+
+def _scispacy_available() -> bool:
+    try:
+        import importlib.util
+
+        return all(importlib.util.find_spec(m) for m in ("scispacy", "negspacy", "en_ner_bc5cdr_md"))
+    except Exception:
+        return False
+
+
+requires_ner = pytest.mark.skipif(not _scispacy_available(), reason="scispaCy + en_ner_bc5cdr_md not installed")
+
+
+@pytest.fixture(scope="session")
+def ner():
+    from medagent.ml.nlp import ClinicalNLP
+
+    return ClinicalNLP("en_ner_bc5cdr_md")

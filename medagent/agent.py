@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any, AsyncIterator
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRequest, dynamic_prompt
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
@@ -15,6 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from .config import Settings
 from .harness import ResearchHarness
+from .skills import SkillRegistry, SkillState, skills_prompt
 from .sources import SourceRegistry
 from .tools import build_tools
 
@@ -32,7 +34,14 @@ How to work
   not incidence.
 - For "what's new" questions use find_new_research. Label preprints as not peer reviewed.
 - Use get_article or read_source when a conclusion needs effect sizes or methods you do not yet have.
-- Stop searching once the evidence is sufficient; do not exceed ~8 tool calls unless necessary.
+- Stop searching once the evidence is sufficient; do not exceed ~10 tool calls unless necessary.
+
+Specialised models (deterministic, prefer them over your own reasoning for these jobs)
+- Patient vignettes: analyze_clinical_text first (biomedical NER with negation), so pertinent negatives are not missed.
+- Any score, eGFR/CrCl, risk %, corrected lab value: run_calculator. Never do clinical arithmetic yourself.
+- Post-test probabilities: diagnostic_probability. ARR/NNT/NNH: treatment_effect.
+- Numbers from a paper: extract_effect_sizes / extract_pico on the cited source, and quote those values.
+- Follow the active skills below; load_skill if the question needs another one.
 
 How to answer (Markdown)
 **Bottom line** — 2–4 sentences answering the question directly, with the strength of evidence.
@@ -59,12 +68,25 @@ def make_model(settings: Settings) -> BaseChatModel:
     return init_chat_model(settings.model, **kwargs)
 
 
-def build_agent(harness: ResearchHarness, registry: SourceRegistry, model: BaseChatModel | None = None, checkpointer=None):
+def build_agent(harness: ResearchHarness, registry: SourceRegistry, model: BaseChatModel | None = None, checkpointer=None,
+                skills: SkillRegistry | None = None, state: SkillState | None = None):
     model = model or make_model(harness.settings)
+    base = SYSTEM_PROMPT.format(today=date.today().isoformat())
+    middleware = []
+    if skills is not None:
+        state = state or SkillState()
+
+        @dynamic_prompt
+        def with_skills(request: ModelRequest) -> str:
+            # Re-evaluated on every model call, so skills loaded mid-run take effect on the next step.
+            return base + "\n\n" + skills_prompt(skills, state.active, state.loaded)
+
+        middleware.append(with_skills)
     return create_agent(
         model,
-        tools=build_tools(harness, registry),
-        system_prompt=SYSTEM_PROMPT.format(today=date.today().isoformat()),
+        tools=build_tools(harness, registry, state, skills),
+        system_prompt=base,
+        middleware=middleware,
         checkpointer=checkpointer,
         name="medagent",
     )
@@ -83,6 +105,7 @@ def _text_of(content: Any) -> str:
 class Conversation:
     id: str
     registry: SourceRegistry = field(default_factory=SourceRegistry)
+    skill_state: SkillState = field(default_factory=SkillState)
     agent: Any = None
 
 
@@ -92,8 +115,9 @@ class AgentService:
     Events: {"type": "status"|"tool_start"|"tool_end"|"token"|"sources"|"answer"|"error", ...}
     """
 
-    def __init__(self, harness: ResearchHarness, model: BaseChatModel | None = None):
+    def __init__(self, harness: ResearchHarness, model: BaseChatModel | None = None, skills: SkillRegistry | None = None):
         self.harness = harness
+        self.skills = skills if skills is not None else SkillRegistry()
         self._model = model
         self._checkpointer = InMemorySaver()
         self._conversations: dict[str, Conversation] = {}
@@ -104,7 +128,8 @@ class AgentService:
         if conv is None:
             conv = Conversation(id=cid)
             model = self._model or make_model(self.harness.settings)
-            conv.agent = build_agent(self.harness, conv.registry, model=model, checkpointer=self._checkpointer)
+            conv.agent = build_agent(self.harness, conv.registry, model=model, checkpointer=self._checkpointer,
+                                     skills=self.skills, state=conv.skill_state)
             self._conversations[cid] = conv
         return conv
 
@@ -130,6 +155,18 @@ class AgentService:
     async def stream(self, question: str, conversation_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
         conv = self._conversation(conversation_id)
         yield {"type": "status", "conversation_id": conv.id, "message": "Planning searches…"}
+        # Route to skills: keyword triggers + entities from the clinical NER model.
+        try:
+            findings = await self.harness.ml.analyze(question)
+            labels = [e.label for e in findings.entities if not e.negated]
+        except Exception:
+            findings, labels = None, []
+        matches = self.skills.route(question, labels)
+        conv.skill_state.set_question(question, matches)
+        yield {"type": "skills", "items": [{"name": m.skill.name, "title": m.skill.title, "score": m.score, "reasons": m.reasons}
+                                           for m in matches],
+               "ner": {"backend": findings.backend, "conditions": findings.conditions, "medications": findings.medications,
+                       "negated": findings.negated_conditions + findings.negated_medications} if findings else None}
         config = {"configurable": {"thread_id": conv.id}, "recursion_limit": 40}
         sent = len(conv.registry)
         final = ""

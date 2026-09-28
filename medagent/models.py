@@ -66,6 +66,7 @@ class Article(BaseModel):
     sample_size: int | None = None
     bottom_line: str | None = None
     score: float = 0.0
+    relevance: float | None = Field(None, description="0..1 relevance to the question (reranker)")
     also_in: list[str] = Field(default_factory=list, description="Other providers that returned it")
 
 
@@ -196,3 +197,4 @@ class SearchBundle(BaseModel):
     web: list[WebResult] = Field(default_factory=list)
     providers: list[ProviderStatus] = Field(default_factory=list)
     evidence_counts: dict[str, int] = Field(default_factory=dict)
+    relevance_backend: str | None = None

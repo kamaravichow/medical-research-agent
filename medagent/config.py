@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     ncbi_email: str | None = Field(None, alias="NCBI_EMAIL")
     openfda_api_key: str | None = Field(None, alias="OPENFDA_API_KEY")
 
+    # Specialised ML models. "auto" loads them when installed (falls back per component);
+    # "rules" uses only the deterministic fallbacks.
+    ml_mode: str = Field("auto", alias="MEDAGENT_ML")
+    ner_model: str = Field("en_ner_bc5cdr_md", alias="MEDAGENT_NER_MODEL")
+    pico_model: str = Field("kamalkraj/BioELECTRA-PICO", alias="MEDAGENT_PICO_MODEL")
+    reranker_model: str = Field("ncbi/MedCPT-Cross-Encoder", alias="MEDAGENT_RERANKER_MODEL")
+    preload_models: bool = Field(True, alias="MEDAGENT_PRELOAD_MODELS")
+
     data_dir: Path = Field(Path("./data"), alias="MEDAGENT_DATA_DIR")
     http_timeout: float = Field(20.0, alias="MEDAGENT_HTTP_TIMEOUT")
     tool: str = "medagent"
