@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MedAgent Evidence Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand" aria-label="MedAgent">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+    <span>MedAgent</span>
+  </div>
+  <nav class="modes" role="tablist" aria-label="Mode">
+    <button role="tab" data-mode="evidence" aria-selected="true">Evidence</button>
+    <button role="tab" data-mode="ask">Ask</button>
+    <button role="tab" data-mode="new">What's new</button>
+    <button role="tab" data-mode="trials">Trials</button>
+    <button role="tab" data-mode="drug">Drugs</button>
+    <button role="tab" data-mode="library">Library</button>
+  </nav>
+  <div class="status" id="status" title="Connected sources"></div>
+</header>
+
+<form class="searchbar" id="searchForm" autocomplete="off">
+  <label class="sr-only" for="q">Search</label>
+  <input id="q" name="q" type="search" placeholder="e.g. SGLT2 inhibitors in HFpEF" autofocus>
+  <select id="days" aria-label="Look-back window" hidden>
+    <option value="7">Last 7 days</option>
+    <option value="30" selected>Last 30 days</option>
+    <option value="90">Last 90 days</option>
+    <option value="365">Last year</option>
+  </select>
+  <input id="trialLocation" type="text" placeholder="Location (optional)" aria-label="Trial location" hidden>
+  <label class="check" id="recruitingWrap" hidden><input id="recruiting" type="checkbox" checked> Recruiting</label>
+  <button type="submit" class="primary" id="goBtn">Search</button>
+  <button type="button" class="ghost" id="watchBtn" hidden title="Save this topic and get a digest of new papers">Watch topic</button>
+</form>
+<div class="examples" id="examples"></div>
+
+<main class="desk" id="desk">
+  <aside class="rail" id="rail" aria-label="Filters">
+    <section>
+      <h3>Level of evidence</h3>
+      <div id="designFilters" class="facet"></div>
+    </section>
+    <section>
+      <h3>Published</h3>
+      <div class="years">
+        <input id="yearFrom" type="number" min="1900" max="2100" placeholder="from" aria-label="Year from">
+        <span>–</span>
+        <input id="yearTo" type="number" min="1900" max="2100" placeholder="to" aria-label="Year to">
+      </div>
+      <div class="chips" id="yearChips">
+        <button type="button" data-years="2">2 y</button>
+        <button type="button" data-years="5">5 y</button>
+        <button type="button" data-years="10">10 y</button>
+        <button type="button" data-years="0">Any</button>
+      </div>
+    </section>
+    <section>
+      <h3>Access</h3>
+      <label class="check"><input id="oaOnly" type="checkbox"> Free full text only</label>
+      <label class="check"><input id="preprints" type="checkbox" checked> Include preprints</label>
+    </section>
+    <section>
+      <h3>Watched topics</h3>
+      <ul id="watchList" class="watchlist"><li class="muted">None yet</li></ul>
+    </section>
+    <section class="providers" id="providers"></section>
+  </aside>
+
+  <section class="results" id="results" aria-live="polite"></section>
+
+  <aside class="preview" id="preview" aria-label="Preview"></aside>
+</main>
+
+<main class="askview" id="askView" hidden>
+  <section class="thread" id="thread"></section>
+  <aside class="sources" id="askSources" aria-label="Sources">
+    <h3>Sources <span id="srcCount" class="count"></span></h3>
+    <div id="srcList" class="srclist"><p class="muted">Sources the agent consults appear here, numbered as they are cited.</p></div>
+  </aside>
+</main>
+
+<div class="popover" id="popover" role="tooltip" hidden></div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<footer class="foot">
+  Evidence levels are automatic triage labels from publication type and wording, not a formal appraisal. Supports clinical judgement; does not replace it.
+  <span class="keys"><kbd>/</kbd> search <kbd>j</kbd><kbd>k</kbd> move <kbd>s</kbd> save <kbd>o</kbd> open</span>
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
